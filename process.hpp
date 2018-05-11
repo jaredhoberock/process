@@ -164,17 +164,11 @@ class process
   public:
     using id = pid_t;
 
+    // consider adding an overload which takes an executor which creates new processes
+    // the problem is that it's not clear how to get the pid if we delegate process creation to an executor
     template<class Function>
     process(Function&& f)
       : process(active_message(std::forward<Function>(f)))
-    {}
-
-    inline process(active_message&& m)
-      : id_(spawn(std::move(m)))
-    {}
-
-    inline process(const active_message& m)
-      : id_(spawn(m))
     {}
 
     inline ~process()
@@ -212,6 +206,14 @@ class process
     }
 
   private:
+    inline process(active_message&& m)
+      : id_(spawn(std::move(m)))
+    {}
+
+    inline process(const active_message& m)
+      : id_(spawn(m))
+    {}
+
     static id spawn(active_message message)
     {
       // make a copy of this process's environment and set a variable to contain the serialized active message
