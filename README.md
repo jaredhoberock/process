@@ -1,2 +1,2 @@
 # process
-A std::thread-alike for processes
+A `std::thread`-alike for processes.
