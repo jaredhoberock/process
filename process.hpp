@@ -26,137 +26,9 @@
 
 #pragma once
 
-#include <limits.h>
-#include <unistd.h>
-#include <spawn.h>
+#include "new_posix_process_executor.hpp"
 #include <sys/wait.h>
-
-#include <vector>
 #include <utility>
-#include <algorithm>
-
-#include "active_message.hpp"
-
-extern char** environ;
-
-namespace this_process
-{
-
-
-static inline pid_t get_id()
-{
-  return getpid();
-}
-
-
-static inline const std::vector<std::string>& environment()
-{
-  static std::vector<std::string> result;
-
-  if(result.empty())
-  {
-    for(char** variable = environ; *variable; ++variable)
-    {
-      result.push_back(std::string(*variable));
-    }
-  }
-
-  return result;
-}
-
-
-static inline const std::string& filename()
-{
-  static std::string result;
-
-  if(result.empty())
-  {
-    std::string symbolic_name = std::string("/proc/") + std::to_string(getpid()) + "/exe";
-
-    char real_name[PATH_MAX + 1];
-    ssize_t length = readlink(symbolic_name.c_str(), real_name, PATH_MAX);
-    if(length == -1)
-    {
-      throw std::runtime_error("this_process::filename(): Error after readlink().");
-    }
-
-    real_name[length] = '\0';
-
-    result = real_name;
-  }
-
-  return result;
-}
-
-
-namespace detail
-{
-
-
-static inline void set_variable(std::vector<std::string>& environment, const std::string& variable, const std::string& value)
-{
-  auto existing_variable = std::find_if(environment.begin(), environment.end(), [&](const std::string& current_variable)
-  {
-    // check if variable is a prefix of current_variable
-    auto result = std::mismatch(variable.begin(), variable.end(), current_variable.begin());
-    if(result.first == variable.end())
-    {
-      // check if the next character after the prefix is an equal sign
-      return result.second != variable.end() && *result.second == '=';
-    }
-
-    return false;
-  });
-
-  if(existing_variable != environment.end())
-  {
-    *existing_variable = variable + "=" + value;
-  }
-  else
-  {
-    environment.emplace_back(variable + "=" + value);
-  }
-}
-
-
-static inline std::vector<char*> environment_view(const std::vector<std::string>& environment)
-{
-  std::vector<char*> result;
-
-  for(const std::string& variable : environment)
-  {
-    result.push_back(const_cast<char*>(variable.c_str()));
-  }
-
-  // the view is assumed to be null-terminated
-  result.push_back(0);
-
-  return result;
-}
-
-
-// this replaces a process's execution of main() with an active_message if
-// the environment variable EXECUTE_ACTIVE_MESSAGE_BEFORE_MAIN is defined
-struct maybe_execute_active_message_before_main
-{
-  maybe_execute_active_message_before_main()
-  {
-    char* variable = std::getenv("EXECUTE_ACTIVE_MESSAGE_BEFORE_MAIN");
-    if(variable)
-    {
-      active_message message = from_string<active_message>(variable);
-      message.activate();
-
-      std::exit(EXIT_SUCCESS);
-    }
-  }
-};
-
-maybe_execute_active_message_before_main before_main{};
-
-
-} // end detail
-} // end this_process
 
 
 class process
@@ -165,13 +37,12 @@ class process
     using id = pid_t;
 
     // consider adding an overload which takes an executor which creates new processes
-    // the problem is that it's not clear how to get the pid if we delegate process creation to an executor
     template<class Function>
     process(Function&& f)
-      : process(active_message(std::forward<Function>(f)))
+      : id_(create_process_with_executor(std::forward<Function>(f)))
     {}
 
-    inline ~process()
+    inline ~process() noexcept
     {
       if(joinable())
       {
@@ -189,13 +60,13 @@ class process
       return get_id() >= 0;
     }
 
-    inline void join()
+    inline void join() noexcept
     {
       waitpid(get_id(), nullptr, 0);
       detach();
     }
 
-    inline void detach()
+    inline void detach() noexcept
     {
       id_ = -1;
     }
@@ -206,30 +77,12 @@ class process
     }
 
   private:
-    inline process(active_message&& m)
-      : id_(spawn(std::move(m)))
-    {}
-
-    inline process(const active_message& m)
-      : id_(spawn(m))
-    {}
-
-    static id spawn(active_message message)
+    template<class Function>
+    static id create_process_with_executor(Function&& f)
     {
-      // make a copy of this process's environment and set a variable to contain the serialized active message
-      auto child_environment = this_process::environment();
-      this_process::detail::set_variable(child_environment, "EXECUTE_ACTIVE_MESSAGE_BEFORE_MAIN", to_string(message));
-      auto child_environment_view = this_process::detail::environment_view(child_environment);
-
-      id child_id;
-      char* child_argv[] = {nullptr};
-      int error = posix_spawn(&child_id, this_process::filename().c_str(), nullptr, nullptr, child_argv, child_environment_view.data());
-      if(error)
-      {
-        throw std::runtime_error("Error after posix_spawn");
-      }
-
-      return child_id;
+      new_posix_process_executor ex;
+      ex.execute(std::forward<Function>(f));
+      return ex.query(last_created_process_id);
     }
 
     id id_;
