@@ -42,6 +42,9 @@ class process
       : id_(create_process_with_executor(std::forward<Function>(f)))
     {}
 
+    process(const process&) = delete;
+    process& operator=(const process&) = delete;
+
     inline ~process() noexcept
     {
       if(joinable())
